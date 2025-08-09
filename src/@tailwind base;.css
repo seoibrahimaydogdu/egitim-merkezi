@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Test için ekleyin */
+body {
+  background-color: blue !important;
+}

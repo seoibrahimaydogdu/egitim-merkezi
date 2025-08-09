@@ -1,293 +1,346 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import { getClientId } from "../utils/clientId";
-import ModalPlayer from "./ModalPlayer";
+import ModalPlayer from "../components/ModalPlayer";
+import VideoSummarizer from "../components/VideoSummarizer";
 
-type Chapter = { start_seconds: number; title: string };
-
-interface Video {
+type NewVideo = {
   video_id: string;
   title: string;
-  description: string;
-  thumbnail: string;
   published_at: string;
+  thumbnail: string;
   channel_title: string;
-  channel_thumbnail?: string; // logo (opsiyonel)
-  duration?: string;
-  chapters?: Chapter[]; // ✅ chapters eklendi
-}
+};
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-  });
-}
+const CATS = [
+  { id: "all", label: "All Topics" },
+  { id: "basics", label: "SEO Basics" },
+  { id: "technical", label: "Technical SEO" },
+  { id: "content", label: "Content Marketing" },
+  { id: "link", label: "Link Building" },
+  { id: "analytics", label: "Analytics & Tracking" },
+];
 
-const SkeletonCard = () => (
-  <div className="rounded-2xl bg-white/60 backdrop-blur border border-zinc-200 shadow-sm overflow-hidden animate-pulse">
-    <div className="h-40 bg-zinc-200" />
-    <div className="p-4 space-y-3">
-      <div className="h-4 w-3/4 bg-zinc-200 rounded" />
-      <div className="h-3 w-full bg-zinc-200 rounded" />
-      <div className="h-3 w-5/6 bg-zinc-200 rounded" />
-    </div>
-  </div>
-);
+const PATHS = [
+  { title: "SEO Basics", desc: "Start your SEO journey with essentials", lessons: 5, hours: 2 },
+  { title: "Technical SEO Mastery", desc: "Deep dive into site performance", lessons: 8, hours: 4 },
+  { title: "Content & Strategy", desc: "Create content that ranks", lessons: 6, hours: 3 },
+];
 
-const EmptyState = ({ q }: { q: string }) => (
-  <div className="col-span-full text-center py-16">
-    <div className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-zinc-100 shadow">🔎</div>
-    <h3 className="mt-4 text-xl font-semibold text-zinc-900">No results</h3>
-    <p className="text-zinc-500">We couldn’t find videos for “{q}”. Try another search.</p>
-  </div>
-);
+export default function EducationCenter({ onModalToggle }: { onModalToggle: (isOpen: boolean) => void }) {
+  const [query, setQuery] = useState("seo");
+  const [input, setInput] = useState("seo");
+  const [lang, setLang] = useState("en");
+  const [cat, setCat] = useState("all");
 
-const VideoList: React.FC<{
-  query: string;
-  language?: string;
-  category?: string;
-  order?: string;
-}> = ({ query, language = "en", category = "all", order = "relevance" }) => {
-  const [videos, setVideos] = useState<Video[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [nextPageToken, setNextPageToken] = useState<string | null>(null);
-  const [active, setActive] = useState<Video | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [favs, setFavs] = useState<Record<string, boolean>>({});
+  const [videos, setVideos] = useState<NewVideo[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const buildUrl = (pageToken?: string, fresh?: boolean) =>
-    `http://localhost:8000/videos?query=${encodeURIComponent(query)}&language=${language}&order=${order}&max_results=12${
-      pageToken ? `&page_token=${pageToken}` : ""
-    }${fresh ? `&fresh=true` : ""}`;
+  const [newVideos, setNewVideos] = useState<NewVideo[]>([]);
+  const [checkingForNew, setCheckingForNew] = useState(false);
 
-  const fetchVideos = (append = false, pageToken?: string, fresh?: boolean) => {
-    if (append) setLoadingMore(true);
-    else setLoading(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [selectedVideoNotes, setSelectedVideoNotes] = useState<string | null>(null);
 
-    fetch(buildUrl(pageToken, fresh))
-      .then((r) => r.json())
-      .then((d) => {
-        const items: Video[] = d.items || d.results || [];
-        setVideos((prev) => (append ? [...prev, ...items] : items));
-        setNextPageToken(d.nextPageToken || null);
-        setLoading(false);
-        setLoadingMore(false);
-      })
-      .catch(() => {
-        setLoading(false);
-        setLoadingMore(false);
-      });
-  };
+  const baseUrl = (q: string) =>
+    `http://localhost:8000/videos?query=${encodeURIComponent(q)}&language=${encodeURIComponent(lang)}&max_results=12`;
 
-  const refresh = () => {
-    setNextPageToken(null);
-    fetchVideos(false, undefined, true);
-  };
-
-  useEffect(() => {
-    const uid = getClientId();
-    fetch(`http://localhost:8000/favorites?user_id=${uid}`)
-      .then((r) => r.json())
-      .then((d) => {
-        const map: Record<string, boolean> = {};
-        (d.items || []).forEach((row: any) => (map[row.video_id] = true));
-        setFavs(map);
-      })
-      .catch(() => {});
-  }, []);
-
-  const toggleFav = (video: Video) => {
-    const uid = getClientId();
-    const isFav = !!favs[video.video_id];
-
-    if (isFav) {
-      fetch(`http://localhost:8000/favorites?user_id=${uid}&video_id=${video.video_id}`, {
-        method: "DELETE",
-      }).then(() => setFavs((prev) => ({ ...prev, [video.video_id]: false })));
-    } else {
-      fetch(
-        `http://localhost:8000/favorites?user_id=${uid}&video_id=${video.video_id}&query=${encodeURIComponent(
-          query
-        )}`,
-        { method: "POST" }
-      ).then(() => setFavs((prev) => ({ ...prev, [video.video_id]: true })));
+  const fetchVideos = async (searchQuery: string, fresh = false) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${baseUrl(searchQuery)}${fresh ? "&fresh=true" : ""}`);
+      const data = await res.json();
+      setVideos(data.items || []);
+    } catch (err) {
+      console.error("Video listesi çekilirken hata oluştu:", err);
+      setVideos([]);
+    } finally {
+      setLoading(false);
     }
   };
 
+  const refreshFreshOnly = async () => {
+    await fetchVideos(query, true);
+    localStorage.setItem(`last_search_time_${query}`, new Date().toISOString());
+  };
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newQuery = input.trim();
+    if (!newQuery || newQuery === query) return;
+    setQuery(newQuery);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const openModal = (videoId: string, notes?: string) => {
+    setSelectedVideoId(videoId);
+    setSelectedVideoNotes(notes ?? null);
+    setIsModalOpen(true);
+    onModalToggle(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setSelectedVideoId(null);
+    setSelectedVideoNotes(null);
+    onModalToggle(false);
+  };
+
   useEffect(() => {
-    setVideos([]);
-    setNextPageToken(null);
-    fetchVideos(false);
-  }, [query, language, order]);
+    fetchVideos(query, false);
 
-  const shown = videos.filter((v) => {
-    if (category === "all") return true;
-    if (category === "basics") return /beginner|basics|intro/i.test(v.title + " " + v.description);
-    if (category === "technical")
-      return /technical|site|crawl|page speed|core web/i.test(v.title + " " + v.description);
-    if (category === "content") return /content|copy|writing|topic/i.test(v.title + " " + v.description);
-    if (category === "link") return /link|backlink|outreach/i.test(v.title + " " + v.description);
-    if (category === "analytics") return /analytics|ga4|tracking|tag/i.test(v.title + " " + v.description);
-    return true;
-  });
+    const lastSearchTimeKey = `last_search_time_${query}`;
+    const lastSearchTime = localStorage.getItem(lastSearchTimeKey);
+    if (!lastSearchTime) {
+      localStorage.setItem(lastSearchTimeKey, new Date().toISOString());
+      return;
+    }
 
-  const Card = ({ v }: { v: Video }) => (
-    <div className="rounded-2xl bg-white/70 backdrop-blur border border-zinc-200 shadow-sm hover:shadow-xl transition overflow-hidden">
-      {/* Thumbnail + Play */}
-      <div
-        className="relative aspect-video cursor-pointer group"
-        onClick={() => setActive(v)}
-      >
-        <img
-          src={v.thumbnail}
-          alt={v.title}
-          className="w-full h-full object-cover"
-          loading="lazy"
-        />
+    setCheckingForNew(true);
+    fetch(
+      `http://localhost:8000/new_videos?query=${encodeURIComponent(query)}&last_checked_at=${lastSearchTime}`
+    )
+      .then((res) => res.json())
+      .then((data) => {
+        setNewVideos(data.items || []);
+        setCheckingForNew(false);
+      })
+      .catch((err) => {
+        console.error("Yeni videolar kontrol edilirken hata oluştu:", err);
+        setCheckingForNew(false);
+      });
+  }, [query, lang]);
 
-        {/* Overlay: tıklamayı engellemesin */}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
+  const clearAlert = () => {
+    const now = new Date().toISOString();
+    localStorage.setItem(`last_search_time_${query}`, now);
+    setVideos((prev) => [...newVideos, ...prev]);
+    setNewVideos([]);
+  };
 
-        {/* Süre: tıklamayı engellemesin */}
-        <div className="absolute right-3 top-3 text-xs px-2 py-1 rounded bg-black/70 text-white pointer-events-none">
-          {v.duration || "Video"}
-        </div>
-
-        {/* Favori: en üstte ve tıklanabilir */}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleFav(v);
-            // Pulse animasyonu
-            const btn = e.currentTarget as HTMLButtonElement;
-            btn.classList.remove("pulse-anim");
-            void btn.offsetWidth;
-            btn.classList.add("pulse-anim");
-            setTimeout(() => btn.classList.remove("pulse-anim"), 320);
-          }}
-          aria-label={favs[v.video_id] ? "Favorilerden kaldır" : "Favoriye ekle"}
-          title={favs[v.video_id] ? "Favorilerden kaldır" : "Favoriye ekle"}
-          className={`absolute left-3 top-3 z-20 w-10 h-10 flex items-center justify-center rounded-full border bg-white shadow-sm pointer-events-auto transition-transform ${
-            favs[v.video_id]
-              ? "border-red-200 ring-1 ring-red-200 hover:scale-110"
-              : "border-gray-300 hover:scale-110"
-          }`}
-        >
-          {/* svg kalp */}
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            className={`h-5 w-5 ${favs[v.video_id] ? "text-red-500" : "text-gray-400"}`}
-            fill={favs[v.video_id] ? "currentColor" : "none"}
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.18L12 21.35z" />
-          </svg>
-        </button>
-
-        {/* Play ikon overlay: sadece görsel */}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="rounded-full bg-white shadow p-4 transition-transform duration-300 group-hover:scale-110">
-            <div
-              style={{
-                width: 0,
-                height: 0,
-                borderTop: "10px solid transparent",
-                borderBottom: "10px solid transparent",
-                borderLeft: "16px solid #ef4444",
-              }}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Meta */}
-      <div className="p-4">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-            {/(beginner|intro)/i.test(v.title + v.description) ? "beginner" : "intermediate"}
-          </span>
-        </div>
-
-        <h3
-          className="font-semibold text-zinc-900 leading-snug"
-          style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
-          title={v.title}
-        >
-          {v.title}
-        </h3>
-
-        <p
-          className="mt-1 text-sm text-zinc-600"
-          style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
-        >
-          {v.description}
-        </p>
-
-        {/* Logo + Kanal adı */}
-        <div className="mt-4 flex items-center justify-between text-sm text-zinc-500">
-          <span>⏱ {formatDate(v.published_at)}</span>
-          <div className="flex items-center gap-2 min-w-0">
-            {v.channel_thumbnail ? (
-              <img
-                src={v.channel_thumbnail}
-                alt={v.channel_title}
-                className="w-5 h-5 rounded-full object-cover flex-shrink-0"
-                loading="lazy"
-              />
-            ) : null}
-            <span className="truncate max-w-[140px]">{v.channel_title}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  const filteredVideos =
+    cat === "all"
+      ? videos
+      : videos.filter((v) => {
+          const hay = `${v.title}`;
+          if (cat === "basics") return /beginner|basics|intro/i.test(hay);
+          if (cat === "technical") return /technical|site|crawl|page speed|core web/i.test(hay);
+          if (cat === "content") return /content|copy|writing|topic/i.test(hay);
+          if (cat === "link") return /link|backlink|outreach/i.test(hay);
+          if (cat === "analytics") return /analytics|ga4|tracking|tag/i.test(hay);
+          return true;
+        });
 
   return (
-    <>
-      <div className="flex items-center justify-between mb-3">
-        <div className="text-sm text-zinc-500">
-          Results for <strong>{query}</strong>
-        </div>
-        <button onClick={refresh} className="px-3 py-1.5 rounded-lg bg-zinc-900 text-white hover:opacity-90">
-          Yenile (cache bypass)
-        </button>
-      </div>
+    <div className="max-w-7xl mx-auto p-6 space-y-8">
+      {!isModalOpen && (
+        <>
+          <div className="space-y-2">
+            <h1 className="text-2xl md:text-3xl font-bold text-zinc-900 dark:text-zinc-50">Education Center</h1>
+            <p className="text-zinc-500 dark:text-zinc-400">Master SEO with tutorials, guides and expert insights.</p>
+          </div>
 
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {loading
-          ? Array.from({ length: 12 }).map((_, i) => <SkeletonCard key={i} />)
-          : shown.length === 0
-          ? <EmptyState q={query} />
-          : shown.map((v) => <Card key={v.video_id} v={v} />)}
-      </div>
+          <form onSubmit={submit} className="flex flex-wrap gap-2 items-center">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Search content…"
+              className="flex-1 min-w-[220px] px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-50"
+            />
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value)}
+              className="px-3 py-2 border rounded-lg dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-50"
+            >
+              <option value="en">English Content</option>
+              <option value="tr">Türkçe İçerik</option>
+            </select>
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-600"
+            >
+              Search
+            </button>
+            <button
+              type="button"
+              onClick={refreshFreshOnly}
+              disabled={loading}
+              className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 disabled:opacity-50"
+              title="YouTube'dan taze veriyi çek, cache'e yaz ve listeyi güncelle"
+            >
+              {loading ? "Loading…" : "🔄 Refresh (fresh)"}
+            </button>
+          </form>
 
-      {!loading && nextPageToken && (
-        <div className="flex justify-center mt-8">
-          <button
-            onClick={() => fetchVideos(true, nextPageToken!)}
-            disabled={loadingMore}
-            className="px-5 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {loadingMore ? "Loading…" : "Load more"}
-          </button>
-        </div>
+          {newVideos.length > 0 && (
+            <div className="bg-yellow-50 dark:bg-yellow-950 border-l-4 border-yellow-400 p-4 rounded-lg flex items-center justify-between">
+              <div className="flex items-center">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-6 w-6 text-yellow-500 mr-3"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <div>
+                  <h3 className="text-sm font-medium text-yellow-800 dark:text-yellow-200">Yeni İçerik!</h3>
+                  <p className="mt-1 text-sm text-yellow-700 dark:text-yellow-300">
+                    "{query}" anahtar kelimesiyle ilgili {newVideos.length} yeni video yayınlandı.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={clearAlert}
+                className="text-sm text-yellow-700 underline hover:text-yellow-900 dark:text-yellow-300 dark:hover:text-yellow-100"
+              >
+                Kapat
+              </button>
+            </div>
+          )}
+          {checkingForNew && (
+            <div className="text-zinc-500 text-center dark:text-zinc-400">Yeni videolar kontrol ediliyor...</div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            {CATS.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setCat(c.id)}
+                className={`px-3 py-1 rounded-full border text-sm ${
+                  cat === c.id
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white border-zinc-300 text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                }`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+
+          <div>
+            <h2 className="text-lg font-semibold mb-3 dark:text-white">Featured Learning Paths</h2>
+            <div className="grid md:grid-cols-3 gap-4">
+              {PATHS.map((p) => (
+                <div
+                  key={p.title}
+                  className="rounded-xl p-5 bg-gradient-to-br from-blue-50 to-indigo-50 border border-zinc-200 shadow-sm hover:shadow-md transition dark:from-zinc-800 dark:to-zinc-800 dark:border-zinc-700 dark:text-zinc-50"
+                >
+                  <div className="space-y-1">
+                    <h3 className="font-semibold">{p.title}</h3>
+                    <p className="text-sm text-zinc-600 dark:text-zinc-400">{p.desc}</p>
+                  </div>
+                  <div className="mt-4 flex items-center justify-between text-sm text-zinc-500 dark:text-zinc-400">
+                    <span>
+                      {p.lessons} lessons • {p.hours} hours
+                    </span>
+                    <button
+                      onClick={() => openModal("qS-u5-fN-G0", "Örnek SEO notları")}
+                      className="text-blue-600 font-medium"
+                    >
+                      Start Learning
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* GRID */}
+          <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {loading && (
+              <div className="col-span-full text-center text-zinc-500 dark:text-zinc-400">Loading…</div>
+            )}
+            {!loading && filteredVideos.map((v) => {
+              const isBeginner = /beginner|intro|basics/i.test(v.title);
+              return (
+                <div
+                  key={v.video_id}
+                  className="rounded-2xl border border-zinc-200 dark:border-zinc-800 overflow-hidden shadow-sm hover:shadow-md transition bg-white dark:bg-zinc-900"
+                >
+                  <div className="relative group">
+                    <img
+                      src={v.thumbnail}
+                      alt={v.title}
+                      className="w-full aspect-video object-cover"
+                    />
+                    {/* Overlay play button */}
+                    <button
+                      onClick={() => openModal(v.video_id)}
+                      className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/35 transition"
+                      aria-label="Videoyu aç"
+                      title="Videoyu aç"
+                    >
+                      <span className="rounded-xl w-16 h-12 flex items-center justify-center shadow-lg"
+                            style={{ background: "#FF0000" }}>
+                        <svg width="34" height="34" viewBox="0 0 24 24" fill="white">
+                          <path d="M8 5v14l11-7z"></path>
+                        </svg>
+                      </span>
+                    </button>
+                  </div>
+
+                  <div className="p-4">
+                    {/* ▼ Etiketler: seviye + SEO */}
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border
+                        ${isBeginner
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:border-emerald-700"
+                          : "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-700"}`}>
+                        {isBeginner ? "beginner" : "intermediate"}
+                      </span>
+
+                      <span className="inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border
+                        bg-blue-50 text-blue-700 border-blue-200
+                        dark:bg-blue-900/40 dark:text-blue-300 dark:border-blue-700">
+                        SEO
+                      </span>
+                    </div>
+
+                    <h3 className="font-semibold line-clamp-2 text-zinc-900 dark:text-zinc-50">
+                      {v.title}
+                    </h3>
+                    <div className="mt-1 text-sm text-zinc-500 dark:text-zinc-400 line-clamp-2">
+                      {v.channel_title}
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
+                      <span>{new Date(v.published_at).toLocaleDateString()}</span>
+                      <button
+                        onClick={() => openModal(v.video_id)}
+                        className="text-blue-600 dark:text-blue-400 font-medium hover:underline"
+                      >
+                        Watch
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {!loading && filteredVideos.length === 0 && (
+              <div className="col-span-full text-center text-zinc-500 dark:text-zinc-400">
+                No videos found.
+              </div>
+            )}
+          </div>
+        </>
       )}
 
-      {active && (
+      {isModalOpen && selectedVideoId && (
         <ModalPlayer
-          videoId={active.video_id}
-          title={active.title}
-          query={query}
-          chapters={(active as any).chapters || []}
-          onClose={() => setActive(null)}
+          videoId={selectedVideoId}
+          channelId="default-channel-id"
+          chapters={[]}
+          onClose={closeModal}
         />
       )}
-    </>
+      {isModalOpen && selectedVideoNotes && <VideoSummarizer notes={selectedVideoNotes} />}
+    </div>
   );
-};
-
-export default VideoList;
+}
